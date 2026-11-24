@@ -19,8 +19,8 @@ export const TIMEOUT_MS = 30_000;
 export const MAX_OUTPUT_CHARS = 48 * 1024;
 
 export const INSTRUCTIONS = `
-You are a coding assistant in an interactive REPL.
-You have one tool: execute a Python 3 script with python3 in the working directory.
+You are a coding assistant in an interactive AI harness.
+You have one tool: execute a Python 3 script in the working directory.
 To call it, end your reply with a block. The marker must be on its own line. Put a newline before it. Never append ===TOOL CALL=== to the previous sentence.
 
 Example:
@@ -31,11 +31,17 @@ Listing the folder.
 from pathlib import Path
 print("\\n".join(p.name for p in Path(".").iterdir()))
 
-Every line after the marker, through the end of the reply, is the source. Do not write anything after the source.
-Do not emit that marker line unless you are calling the tool. The source must not contain a line that is exactly ===TOOL CALL===.
-The next user message is the result only: exit, stdout, and stderr. It does not repeat the tool call.
-You may call the tool again by ending your next reply with another block. When you are done, reply with no tool block.
+Every line after the marker, through the end of the reply, is the source.
+Do not write anything after the source.
+Do not emit that marker line unless you are calling the tool.
+The source must not contain a line that is exactly ===TOOL CALL===.
+The next user message is the result only: exit, stdout, and stderr.
+It does not repeat the tool call.
+You may call the tool again by ending your next reply with another block.
+When you are done, reply with no tool block.
 Do not claim the tool ran unless a later user message reports the result.
+The tool call code block is not presented to the user, but is shown as a notification.
+Your message to user is rendered as Markdown content.
 `.trim();
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
@@ -117,7 +123,8 @@ export async function runSnippet(
     `.justcode-snippet-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.py`,
   );
   const python = Bun.which("python3");
-  if (!python) return { exitCode: null, stdout: "", stderr: "python3 not found on PATH" };
+  if (!python)
+    return { exitCode: null, stdout: "", stderr: "python3 not found on PATH" };
   await writeFile(file, source);
   const timeout = AbortSignal.timeout(timeoutMs);
   const proc = Bun.spawn([python, file], {
