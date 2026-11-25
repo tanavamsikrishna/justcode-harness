@@ -10,6 +10,7 @@ import path from "node:path";
 import {
   buildInstructions,
   formatToolResult,
+  hasToolCallFormatError,
   MAX_TOOL_CALLS,
   parseToolCall,
   runSnippet,
@@ -80,6 +81,13 @@ describe("parseToolCall", () => {
   test("keeps script indentation and accepts a padded marker line", () => {
     const text = `  ${TOOL_MARK}  \n  console.log(1)\n`;
     expect(parseToolCall(text)?.source).toBe("  console.log(1)");
+  });
+
+  test("flags a marker glued to the previous line", () => {
+    const text = `Listing.${TOOL_MARK}\nprint(1)`;
+    expect(hasToolCallFormatError(text)).toBe(true);
+    expect(hasToolCallFormatError(`\n${TOOL_MARK}\nprint(1)`)).toBe(false);
+    expect(hasToolCallFormatError(`see ${TOOL_MARK} in prose`)).toBe(false);
   });
 });
 
@@ -263,6 +271,59 @@ describe("runSnippet", () => {
     expect(result.stderr).toContain("timed out");
   });
 
+  test("keeps names across calls in one console", async () => {
+    await withToolFixture(async ({ cwd }) => {
+      expect(
+        (await runSnippet("x = 41", { cwd, persistent: true })).exitCode,
+      ).toBe(0);
+      const value = await runSnippet("print(x + 1)", {
+        cwd,
+        persistent: true,
+      });
+      expect(value.exitCode).toBe(0);
+      expect(value.stdout).toBe("42\n");
+      const failed = await runSnippet('raise RuntimeError("nope")', {
+        cwd,
+        persistent: true,
+      });
+      expect(failed.exitCode).not.toBe(0);
+      const still = await runSnippet("print(x)", { cwd, persistent: true });
+      expect(still.exitCode).toBe(0);
+      expect(still.stdout).toBe("41\n");
+    });
+  });
+
+  test("runs a function and a later statement in one snippet", async () => {
+    const result = await runSnippet("def f():\n    return 3\nprint(f())\n");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("3\n");
+  });
+
+  test("does not let input() read the protocol stream", async () => {
+    const result = await runSnippet("print(input())", { timeoutMs: 2_000 });
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  test("starts a fresh console after a timeout", async () => {
+    await withToolFixture(async ({ cwd }) => {
+      expect(
+        (await runSnippet("kept = 1", { cwd, persistent: true })).exitCode,
+      ).toBe(0);
+      const hung = await runSnippet("import time\ntime.sleep(30)", {
+        cwd,
+        persistent: true,
+        timeoutMs: 200,
+      });
+      expect(hung.exitCode).toBeNull();
+      expect(hung.stderr).toContain("timed out");
+      const after = await runSnippet("print(kept)", {
+        cwd,
+        persistent: true,
+      });
+      expect(after.exitCode).not.toBe(0);
+    });
+  });
+
   test("imports a module from the harness tools directory", async () => {
     await withToolFixture(async ({ cwd, toolsDir }) => {
       await writeModule(toolsDir, "jchprobe_harness", "harness");
@@ -373,10 +434,11 @@ describe("buildInstructions", () => {
         'def alpha(n: int) -> int:\n    """Double\n    it."""\n    return n\n',
       );
       const text = buildInstructions({ cwd, toolsDir });
+      expect(text).toContain("persistent interactive console");
       expect(text).not.toContain("Snippets can import");
-      expect(text.indexOf("The following modules are available to you")).toBeGreaterThan(
-        text.indexOf("===TOOL CALL==="),
-      );
+      expect(
+        text.indexOf("The following modules are available to you"),
+      ).toBeGreaterThan(text.indexOf("===TOOL CALL==="));
       expect(text).toContain(
         '```\nalpha\nFollowing funcs are available\ndef alpha(n: int) -> int:\n    """Double\n    it."""',
       );
@@ -414,6 +476,44 @@ describe("buildInstructions", () => {
       expect(text).not.toContain("fetch");
       expect(text).not.toContain("inner");
       expect(text).not.toContain("method");
+    });
+  });
+
+  test("includes raw docstrings and signatures with nested parentheses", async () => {
+    await withToolFixture(async ({ cwd, toolsDir }) => {
+      const exact = String.raw`        new_exact: Use raw string (r\"\"\"<exact-string>\"\"\")`;
+      await writeFile(path.join(toolsDir, "broken.py"), "def (\n");
+      await writeFile(
+        path.join(toolsDir, "edit.py"),
+        [
+          "def edit(file: str, old_regex: str, new_exact: str):",
+          '    r"""',
+          "    Does a search replace editing on the given file.",
+          "",
+          exact,
+          '    """',
+          "    return file",
+          "",
+          "def nested(x=(1, 2)) -> tuple[int, int]:",
+          '    """pair"""',
+          "    return x",
+          "",
+        ].join("\n"),
+      );
+      const text = buildInstructions({ cwd, toolsDir });
+      expect(text).toContain(
+        [
+          "def edit(file: str, old_regex: str, new_exact: str):",
+          '    r"""',
+          "    Does a search replace editing on the given file.",
+        ].join("\n"),
+      );
+      expect(text).toContain(exact.trim());
+      expect(text).toContain(
+        'def nested(x=(1, 2)) -> tuple[int, int]:\n    """pair"""',
+      );
+      expect(text).not.toContain("return file");
+      expect(text).not.toContain("return x");
     });
   });
 
@@ -457,6 +557,20 @@ describe("buildInstructions", () => {
       expect(text).not.toContain(".jch/tools/");
       expect(text).not.toContain("tools/");
       expect(text).toContain("You have one tool:");
+    });
+  });
+
+  test("does not import tool modules while reading the catalog", async () => {
+    await withToolFixture(async ({ cwd, toolsDir }) => {
+      const marker = path.join(toolsDir, "imported.txt");
+      await writeFile(
+        path.join(toolsDir, "side.py"),
+        `open(${JSON.stringify(marker)}, "w").write("x")\ndef side():\n    """ok"""\n`,
+      );
+      const text = buildInstructions({ cwd, toolsDir });
+      expect(text).toContain("def side():");
+      expect(text).toContain('"""ok"""');
+      expect(await Bun.file(marker).exists()).toBe(false);
     });
   });
 });

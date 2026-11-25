@@ -9,11 +9,11 @@ The tool call is at the end of the assistant message. The marker must occupy its
 <python3 script>
 ```
 
-A line whose trimmed text is not exactly `===TOOL CALL===` is not a marker. The script must not contain that line. A reply that does not end with the block ends the turn. A truncated reply is not executed.
+A line whose trimmed text is not exactly `===TOOL CALL===` is not a marker. The script must not contain that line. A reply that does not end with the block ends the turn. A truncated reply is not executed. If a trailing marker shares its line with other text, the tool is not run and the raw reply is printed.
 
-The harness runs the script with the first `python3` on `PATH`, in the working directory, unsandboxed. `AI_GATEWAY_API_KEY` is removed from the child environment. Timeout is 30s. Captured output is truncated at 48KB. The child `PYTHONPATH` lists `<cwd>/.jch/tools`, then the harness `tools` directory next to the TypeScript sources, then any inherited `PYTHONPATH`, so a working-directory module overrides a harness module of the same name. The system instructions end with a code block listing each top-level `def` and its docstring from those two directories, and omit a later definition of a name already found earlier on that path.
+The harness runs each script in one persistent `python3` interactive console, the first `python3` on `PATH`, in the working directory, unsandboxed. Names survive later calls. A timeout or interrupt kills that process and the next call starts fresh; an exception does not. `AI_GATEWAY_API_KEY` is removed from the child environment. Timeout is 30s. Captured output is truncated at 48KB. The child `PYTHONPATH` lists `<cwd>/.jch/tools`, then the harness `tools` directory next to the TypeScript sources, then any inherited `PYTHONPATH`, so a working-directory module overrides a harness module of the same name. The working directory stays first on `sys.path`. The system instructions end with a code block listing each top-level `def` and its docstring from those two directories, and omit a later definition of a name already found earlier on that path. The repl worker reads those files with ast and does not import them.
 
-Before that run, the REPL asks for permission. `--need-permissions` defaults to true. Pass `--need-permissions false` to skip the prompt. A denial does not spawn python3; the next user message is a result-only denial and the model may continue.
+Before that run, the REPL asks for permission. `--need-permissions` defaults to true. Pass `--need-permissions false` to skip the prompt. A denial does not spawn python3. The REPL asks for a reason, and the next user message is a result-only denial that includes that reason. The model may continue.
 
 The next user message is the result only. It does not contain the tool call:
 

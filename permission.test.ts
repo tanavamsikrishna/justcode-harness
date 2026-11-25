@@ -1,6 +1,7 @@
 /**
  * REPL permission gate. `--need-permissions` defaults to true. A denial does
- * not run the script; the turn still appends a result-only user message.
+ * not run the script. The REPL asks for a reason, and the turn appends a
+ * result-only user message that includes it.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -13,6 +14,7 @@ import {
 import {
   allowsRun,
   parseNeedPermissions,
+  permissionDenied,
   PERMISSION_DENIED,
   runIfPermitted,
 } from "./index.ts";
@@ -69,11 +71,22 @@ describe("allowsRun", () => {
   });
 });
 
+describe("permissionDenied", () => {
+  test("omits a blank reason and keeps the denial text otherwise", () => {
+    expect(permissionDenied("")).toBe(PERMISSION_DENIED);
+    expect(permissionDenied("   ")).toBe(PERMISSION_DENIED);
+    expect(permissionDenied("  not that file  ").stderr).toBe(
+      "permission denied; script was not run\nreason: not that file",
+    );
+  });
+});
+
 describe("runIfPermitted", () => {
-  test("does not run or spawn when permission is denied, and the denial is logged like any other result", async () => {
+  test("does not run or spawn when permission is denied, and the reason is sent back", async () => {
     const logged: ChatMessage[] = [];
     let ran = false;
     let asked = "";
+    const denied = permissionDenied("not that file");
     const messages: ChatMessage[] = [];
     const status = await runTurn(
       messages,
@@ -81,7 +94,8 @@ describe("runIfPermitted", () => {
       async (msgs) => {
         if (msgs.length === 1)
           return { text: `${TOOL_MARK}\nprint(1)`, finishReason: "stop" };
-        expect(msgs.at(-1)?.content).toBe(formatToolResult(PERMISSION_DENIED));
+        expect(msgs.at(-1)?.content).toBe(formatToolResult(denied));
+        expect(msgs.at(-1)?.content).toContain("reason: not that file");
         expect(msgs.at(-1)?.content).not.toContain(TOOL_MARK);
         expect(msgs.at(-1)?.content).not.toContain("print(1)");
         return { text: "stopped", finishReason: "stop" };
@@ -92,7 +106,7 @@ describe("runIfPermitted", () => {
           true,
           async (script) => {
             asked = script;
-            return false;
+            return { allowed: false, reason: "not that file" };
           },
           async () => {
             ran = true;
@@ -108,7 +122,7 @@ describe("runIfPermitted", () => {
     expect(ran).toBe(false);
     expect(messages[2]).toEqual({
       role: "user",
-      content: formatToolResult(PERMISSION_DENIED),
+      content: formatToolResult(denied),
     });
     expect(logged.map((message) => message.role)).toEqual([
       "user",
@@ -119,6 +133,7 @@ describe("runIfPermitted", () => {
     expect(logged[2]).toEqual(messages[2]);
     expect(logged[2]?.content).toContain("permission denied");
     expect(logged[2]?.content).toContain("script was not run");
+    expect(logged[2]?.content).toContain("reason: not that file");
   });
 
   test("keeps the result protocol when permission is granted", async () => {
@@ -136,7 +151,7 @@ describe("runIfPermitted", () => {
         runIfPermitted(
           source,
           true,
-          async () => true,
+          async () => ({ allowed: true }),
           async (script) => {
             ran.push(script);
             return { exitCode: 0, stdout: "1\n", stderr: "" };
@@ -158,7 +173,7 @@ describe("runIfPermitted", () => {
       false,
       async () => {
         asked = true;
-        return false;
+        return { allowed: false, reason: "unused" };
       },
       async () => ({ exitCode: 0, stdout: "1\n", stderr: "" }),
     );
@@ -167,7 +182,10 @@ describe("runIfPermitted", () => {
   });
 
   test("a denial does not end the turn; the next script asks again", async () => {
-    const answers = [false, true];
+    const answers = [
+      { allowed: false as const, reason: "no" },
+      { allowed: true as const },
+    ];
     const ran: string[] = [];
     const status = await runTurn(
       [],
@@ -186,7 +204,7 @@ describe("runIfPermitted", () => {
         runIfPermitted(
           source,
           true,
-          async () => answers.shift() ?? false,
+          async () => answers.shift() ?? { allowed: false, reason: "" },
           async (script) => {
             ran.push(script);
             return { exitCode: 0, stdout: "ok\n", stderr: "" };
@@ -202,7 +220,7 @@ describe("runIfPermitted", () => {
     const result = await runIfPermitted(
       "print(1)",
       true,
-      async () => false,
+      async () => ({ allowed: false, reason: "   " }),
       () => {
         throw new Error("runner must not be called");
       },

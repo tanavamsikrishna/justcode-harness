@@ -1,10 +1,11 @@
 /**
  * Interactive REPL. Reads a meta/muse-ember reply through the Vercel AI Gateway,
- * prints it as terminal Markdown, and runs a Python 3 script when the reply ends
- * with a tool block.
+ * prints it as terminal Markdown, and runs the tool block in a persistent
+ * Python console.
  *
  * `--need-permissions` defaults to true: the REPL asks before each script. A denial
- * does not spawn python3; the turn still records a result-only message.
+ * does not spawn python3. The REPL then asks for a reason and records it in the
+ * result-only message sent back to the model.
  * Requires AI_GATEWAY_API_KEY. Invoke with `envchain vercel bun run index.ts`.
  * `/exit` or Ctrl-D quits. Ctrl-C exits immediately, cancels an in-flight reply,
  * and does not append a message. Messages are appended to `sessions/<start-timestamp>.jsonl`.
@@ -21,6 +22,7 @@ import { stdin as input, stdout as output } from "node:process";
 import {
   INSTRUCTIONS,
   killActiveSnippet,
+  hasToolCallFormatError,
   parseToolCall,
   runSnippet,
   runTurn,
@@ -100,15 +102,32 @@ export const PERMISSION_DENIED: SnippetResult = {
   stderr: "permission denied; script was not run",
 };
 
+export type PermissionDecision =
+  | { allowed: true }
+  | { allowed: false; reason: string };
+
+/** Denial result. A blank reason is omitted. This text is what the model sees. */
+export function permissionDenied(reason: string): SnippetResult {
+  const trimmed = reason.trim();
+  if (trimmed.length === 0) return PERMISSION_DENIED;
+  return {
+    exitCode: null,
+    stdout: "",
+    stderr: `${PERMISSION_DENIED.stderr}\nreason: ${trimmed}`,
+  };
+}
+
 /** Runs the script only when permission is off or the user allows it. */
 export async function runIfPermitted(
   source: string,
   needPermissions: boolean,
-  ask: (source: string) => Promise<boolean>,
+  ask: (source: string) => Promise<PermissionDecision>,
   run: (source: string) => Promise<SnippetResult>,
 ): Promise<SnippetResult> {
-  if (needPermissions && !(await ask(source))) return PERMISSION_DENIED;
-  return run(source);
+  if (!needPermissions) return run(source);
+  const decision = await ask(source);
+  if (decision.allowed) return run(source);
+  return permissionDenied(decision.reason);
 }
 
 /** Renders the reply. A trailing tool block is omitted; the harness runs it separately. */
@@ -183,6 +202,12 @@ function createGenerate(signal: AbortSignal): (
     for await (const part of result.textStream) text += part;
     throwIfAborted(signal);
     if (text.length > 0) {
+      if (hasToolCallFormatError(text)) {
+        console.error(
+          "\\nerror: tool call format; printing the reply for inspection",
+        );
+        console.error(text);
+      }
       const rendered = await renderAssistant(text);
       throwIfAborted(signal);
       if (rendered.length > 0)
@@ -261,13 +286,14 @@ if (import.meta.main) {
                 const answer = await rl.question(
                   "[tool] run this script? [y/N] ",
                 );
-                const allowed = allowsRun(answer);
-                if (!allowed) console.error("[tool] denied");
-                return allowed;
+                if (allowsRun(answer)) return { allowed: true };
+                console.error("[tool] denied");
+                const reason = await rl.question("[tool] reason: ");
+                return { allowed: false, reason };
               },
               async (script) => {
                 console.error("\n[tool] running");
-                const result = await runSnippet(script);
+                const result = await runSnippet(script, { persistent: true });
                 printResult(result);
                 return result;
               },

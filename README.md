@@ -2,7 +2,7 @@
 
 **Do not use this in production.** This is an experiment in tool calling: the only way to call a tool is to send Python code in the assistant message itself. There is no tool-schema section and no native provider tool calls.
 
-Interactive REPL. One tool: a Python 3 script run with `python3` on `PATH`. The model requests it by ending an assistant reply with a `===TOOL CALL===` block. See `AGENTS.md`.
+Interactive REPL. One tool: Python in a persistent interactive console, run with `python3` on `PATH`. Names survive later calls. The model requests it by ending an assistant reply with a `===TOOL CALL===` block. See `AGENTS.md`.
 
 Snippets can import top-level modules from `.jch/tools` in the working directory and from the harness `tools` directory, with `.jch/tools` searched first.
 
@@ -18,7 +18,7 @@ To run (`AI_GATEWAY_API_KEY` comes from envchain):
 envchain vercel bun run index.ts
 ```
 
-`/exit` or Ctrl-D quits. Ctrl-C exits immediately, cancels an in-flight reply, and does not append a message. A line ending in `\` continues the prompt. Messages are appended to `sessions/<start-timestamp>.jsonl`. `--need-permissions` defaults to true, so the REPL asks before each tool script; pass `--need-permissions false` to skip the prompt.
+`/exit` or Ctrl-D quits. Ctrl-C exits immediately, cancels an in-flight reply, and does not append a message. A line ending in `\` continues the prompt. Messages are appended to `sessions/<start-timestamp>.jsonl`. `--need-permissions` defaults to true, so the REPL asks before each tool script and, on denial, asks for a reason that is sent back to the model. Pass `--need-permissions false` to skip the prompt.
 
 To type check:
 
