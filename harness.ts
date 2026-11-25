@@ -8,8 +8,14 @@
  * The script runs unsandboxed in the working directory. `AI_GATEWAY_API_KEY`
  * is stripped from the child. The active child can be killed without waiting.
  * The marker must occupy its own line. A later marker line starts the script instead.
+ * Child PYTHONPATH is <cwd>/.jch/tools, then this file's tools directory, then any
+ * inherited PYTHONPATH. A local module overrides a harness module of the same name.
+ * System instructions list each module name with its top-level defs and
+ * docstrings from those two directories. A name already found earlier on that
+ * path is omitted. Modules are files at each tools directory root.
  */
 
+import { readdirSync, readFileSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -18,8 +24,90 @@ export const MAX_TOOL_CALLS = 20;
 export const TIMEOUT_MS = 30_000;
 export const MAX_OUTPUT_CHARS = 48 * 1024;
 
-export const INSTRUCTIONS = `
-You are a coding assistant in an interactive AI harness.
+/** Harness tools next to this file, not the process working directory. */
+const HARNESS_TOOLS_DIR = path.join(import.meta.dir, "tools");
+
+/** Column-0 `def` plus an optional docstring. `async def` and indented defs are not matched. */
+const TOOL_DEF_SOURCE = String.raw`^(def\s+\w+\s*\(.*?\)\s*(?:->\s*[^:]+)?\s*:)(?:\s*("""|''').*?\2)?`;
+
+type ToolFunction = { label: string; name: string; text: string };
+
+function pythonFiles(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.name.endsWith(".py") &&
+          (entry.isFile() || entry.isSymbolicLink()),
+      )
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+function functionsInFile(file: string, label: string): ToolFunction[] {
+  let source: string;
+  try {
+    source = readFileSync(file, "utf8").replaceAll("\r\n", "\n");
+  } catch {
+    return [];
+  }
+  const found: ToolFunction[] = [];
+  for (const match of source.matchAll(new RegExp(TOOL_DEF_SOURCE, "gms"))) {
+    const text = match[0];
+    const name = /^def\s+(\w+)/.exec(text)?.[1];
+    if (name === undefined) continue;
+    found.push({ label, name, text });
+  }
+  return found;
+}
+
+/** Earlier directories win. A repeated name later on the path is dropped. */
+function findToolFunctions(dirs: readonly string[]): ToolFunction[] {
+  const seen = new Set<string>();
+  const found: ToolFunction[] = [];
+  for (const dir of dirs) {
+    for (const file of pythonFiles(dir)) {
+      const label = file.slice(0, -3);
+      for (const fn of functionsInFile(path.join(dir, file), label)) {
+        if (seen.has(fn.name)) continue;
+        seen.add(fn.name);
+        found.push(fn);
+      }
+    }
+  }
+  return found;
+}
+
+function formatToolFunctions(functions: readonly ToolFunction[]): string {
+  const groups: string[] = [];
+  for (const fn of functions) {
+    const header = `${fn.label}\nFollowing funcs are available`;
+    const last = groups.at(-1);
+    if (last?.startsWith(`${header}\n`))
+      groups[groups.length - 1] = `${last}\n\n${fn.text}`;
+    else groups.push(`${header}\n${fn.text}`);
+  }
+  return groups.join("\n\n");
+}
+
+/** Instructions for this process. Tool signatures are read from the launch cwd. */
+export function buildInstructions(opts?: {
+  cwd?: string;
+  toolsDir?: string;
+}): string {
+  const cwd = path.resolve(opts?.cwd ?? process.cwd());
+  const toolsDir = path.resolve(opts?.toolsDir ?? HARNESS_TOOLS_DIR);
+  const body = formatToolFunctions(
+    findToolFunctions([path.join(cwd, ".jch", "tools"), toolsDir]),
+  );
+  const modules =
+    body.length === 0
+      ? ""
+      : `\n\nThe following modules are available to you\n\`\`\`\n${body}\n\`\`\``;
+  return `You are a coding assistant in an interactive AI harness.
 You have one tool: execute a Python 3 script in the working directory.
 To call it, end your reply with a block. The marker must be on its own line. Put a newline before it. Never append ===TOOL CALL=== to the previous sentence.
 
@@ -41,8 +129,10 @@ You may call the tool again by ending your next reply with another block.
 When you are done, reply with no tool block.
 Do not claim the tool ran unless a later user message reports the result.
 The tool call code block is not presented to the user, but is shown as a notification.
-Your message to user is rendered as Markdown content.
-`.trim();
+Your message to user is rendered as Markdown content.${modules}`;
+}
+
+export const INSTRUCTIONS = buildInstructions();
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -104,22 +194,31 @@ export function killActiveSnippet(): boolean {
   return true;
 }
 
-function childEnv(): Record<string, string> {
+function childEnv(cwd: string, toolsDir: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && key !== "AI_GATEWAY_API_KEY") env[key] = value;
   }
+  const pythonPath = [
+    path.resolve(cwd, ".jch", "tools"),
+    path.resolve(toolsDir),
+  ];
+  if (process.env.PYTHONPATH !== undefined)
+    pythonPath.push(process.env.PYTHONPATH);
+  env.PYTHONPATH = pythonPath.join(path.delimiter);
   return env;
 }
 
 export async function runSnippet(
   source: string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; cwd?: string; toolsDir?: string },
 ): Promise<SnippetResult> {
   const timeoutMs = opts?.timeoutMs ?? TIMEOUT_MS;
-  // Written in the working directory so the script's directory is cwd (imports and relative paths).
+  const cwd = path.resolve(opts?.cwd ?? process.cwd());
+  const toolsDir = opts?.toolsDir ?? HARNESS_TOOLS_DIR;
+  // Written in cwd so the script directory stays first on sys.path.
   const file = path.join(
-    process.cwd(),
+    cwd,
     `.justcode-snippet-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.py`,
   );
   const python = Bun.which("python3");
@@ -128,8 +227,8 @@ export async function runSnippet(
   await writeFile(file, source);
   const timeout = AbortSignal.timeout(timeoutMs);
   const proc = Bun.spawn([python, file], {
-    cwd: process.cwd(),
-    env: childEnv(),
+    cwd,
+    env: childEnv(cwd, toolsDir),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

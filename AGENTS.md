@@ -11,7 +11,7 @@ The tool call is at the end of the assistant message. The marker must occupy its
 
 A line whose trimmed text is not exactly `===TOOL CALL===` is not a marker. The script must not contain that line. A reply that does not end with the block ends the turn. A truncated reply is not executed.
 
-The harness runs the script with the first `python3` on `PATH`, in the working directory, unsandboxed. `AI_GATEWAY_API_KEY` is removed from the child environment. Timeout is 30s. Captured output is truncated at 48KB.
+The harness runs the script with the first `python3` on `PATH`, in the working directory, unsandboxed. `AI_GATEWAY_API_KEY` is removed from the child environment. Timeout is 30s. Captured output is truncated at 48KB. The child `PYTHONPATH` lists `<cwd>/.jch/tools`, then the harness `tools` directory next to the TypeScript sources, then any inherited `PYTHONPATH`, so a working-directory module overrides a harness module of the same name. The system instructions end with a code block listing each top-level `def` and its docstring from those two directories, and omit a later definition of a name already found earlier on that path.
 
 Before that run, the REPL asks for permission. `--need-permissions` defaults to true. Pass `--need-permissions false` to skip the prompt. A denial does not spawn python3; the next user message is a result-only denial and the model may continue.
 

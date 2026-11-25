@@ -4,6 +4,8 @@
 
 Interactive REPL. One tool: a Python 3 script run with `python3` on `PATH`. The model requests it by ending an assistant reply with a `===TOOL CALL===` block. See `AGENTS.md`.
 
+Snippets can import top-level modules from `.jch/tools` in the working directory and from the harness `tools` directory, with `.jch/tools` searched first.
+
 To install dependencies:
 
 ```bash
