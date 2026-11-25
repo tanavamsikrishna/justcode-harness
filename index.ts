@@ -197,23 +197,26 @@ function createGenerate(signal: AbortSignal): (
       instructions: INSTRUCTIONS,
       messages: messages as ModelMessage[],
       abortSignal: signal,
+      onError: ({ error }) => console.error(error),
     });
     let text = "";
     for await (const part of result.textStream) text += part;
     throwIfAborted(signal);
+    const finishReason = await result.finishReason;
     if (text.length > 0) {
-      if (hasToolCallFormatError(text)) {
-        console.error(
-          "\\nerror: tool call format; printing the reply for inspection",
-        );
+      if (finishReason === "stop" && hasToolCallFormatError(text))
         console.error(text);
-      }
       const rendered = await renderAssistant(text);
       throwIfAborted(signal);
       if (rendered.length > 0)
         output.write(rendered.endsWith("\n") ? rendered : `${rendered}\n`);
     }
-    return { text, finishReason: await result.finishReason };
+    if (finishReason !== "stop") {
+      console.error(finishReason);
+      console.error(await result.rawFinishReason);
+      if (text.length > 0) console.error(text);
+    }
+    return { text, finishReason };
   };
 }
 
@@ -222,7 +225,7 @@ if (import.meta.main) {
   try {
     needPermissions = parseNeedPermissions(process.argv.slice(2));
   } catch (err: unknown) {
-    console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(err);
     process.exit(1);
   }
 
@@ -301,13 +304,9 @@ if (import.meta.main) {
           log,
         );
         if (status === "limit") console.error("error: tool call limit is 20");
-        else if (status === "incomplete")
-          console.error("error: reply incomplete; tool not run");
       } catch (err: unknown) {
         if (replyAbort.signal.aborted) process.exit(SIGINT_EXIT_CODE);
-        console.error(
-          `error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        console.error(err);
       }
     }
   } finally {

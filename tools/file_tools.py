@@ -20,9 +20,8 @@ def edit(file: str, old_regex: str, new_exact: str):
     Args:
         old_regex: A re.DOTALL regular expression to replace. Use \A and \Z to match the start of a file and end of a file respectively. The file should contain exactly one match. Use raw string (r"<regex>")
 
-        new_exact: The exact string to replace with. Use raw string (r\"\"\"<exact-string>\"\"\")
+        new_exact: The exact string to replace with. Use raw string (r'''<exact-string>''')
 
-    Both `old_regex` and `new_exact` should be passed as raw strings (`r` prefixed strings)
     """
     path = Path(file).expanduser()
     with path.open(newline="") as handle:

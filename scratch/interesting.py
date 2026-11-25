@@ -43,13 +43,23 @@ def lorenz(frames=3):
     print("    x horizontal, z vertical - two lobes, one endless orbit")
 
 
-def neighbours(grid, x, y):
-    return sum(
-        grid[(y + dy) % H][(x + dx) % W]
-        for dy in (-1, 0, 1)
-        for dx in (-1, 0, 1)
-        if (dx, dy) != (0, 0)
+# Neighbours, generated not listed: the 8 surrounding cells are just
+# two steps -- 1 and 1+1j, as complex numbers -- rotated by powers
+# of i (a 90-degree turn each). Multiplying by i cycles east ->
+# north -> west -> south, so the cardinals and the diagonals both
+# fall out of one little group action, and the torus wrap below
+# still does the rest.
+_NEIGHBOURS = tuple(
+    dict.fromkeys(
+        (int(z.real), int(z.imag))
+        for seed in (1 + 0j, 1 + 1j)
+        for z in (seed * 1j ** k for k in range(4))
     )
+)
+
+
+def neighbours(grid, x, y):
+    return sum(grid[(y + dy) % H][(x + dx) % W] for dx, dy in _NEIGHBOURS)
 
 
 def life(steps=7):
